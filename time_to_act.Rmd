@@ -1,0 +1,708 @@
+---
+title: 'Time to act: economic and human cost of flood'
+author: "Jean-François Bertrand"
+date: "2024-02-27"
+output: html_document
+---
+
+# Synopsis
+
+As many have observed in recent years, storms and other severe weather events cause both public health and economic problems for communities and municipalities as it often results in fatalities, injuries, and property damage.
+
+The purpose of this report is to identify which of these storms and other severe weather events are a key concern.  More precisely, this report will attempt to answer the 2 following questions:
+1) Across the United States, which types of events are most harmful with respect to population health?
+2) Across the United States, which types of events have the greatest economic consequences?
+
+This project uses the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database - a database that tracks the characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, property damage and crop damage.
+
+For the purpose of this report, we use the sum of fatalities and injuries occurring during events, without any attempt to quantify the value of a fatality compared to an injury, to analyse the impact of events with respect to population health .  We use the sum of property damage and crop damage to quantify events that have the greatest economic consequences.
+
+Focusing on recent years (1993 to 2011), the top 4 events the are most harmful with respect to population health are tornadoes, excessive heat, flood and thunderstorm wind while the top 4 events that have the greatest economic consequences are flood, hurricane, tide and tornadoes.  While addressing the issues contributing to climate change would help reducing the human and economic impact of those severe events, finding solutions to address the impact of flood (both from a human and economic perspective) might is a good place to start acting now.
+
+# Data processing
+
+The [data](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) come in the form of a comma-separated-value file compressed via the bzip2 algorithm.  Documentation of the database is available from [here](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) while FAQ is available from [here](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf).
+
+The events in the database start in the year 1950 and end in November 2011. In the earlier years of the database there are generally fewer events recorded, most likely due to a lack of good records. More recent years should be considered more complete.
+
+A quick look at the data reveals that the quality of the data is poor with many events entries not respecting the guidelines presented in the documentation.  As such, once the data of the event has been converted to POSIXct format in order to identify recent events, work is done to clean the event indicated in the EVTYPE variable. 
+
+## Setting up the environment
+
+This is section setup the libraries and the folder to read data.
+
+```{r set_up, echo=TRUE}
+## Cleaning Global Environment fisrt
+rm(list = ls())
+
+## library to use
+library(data.table)
+library(tidyverse)
+library(ggplot2)
+library(gridExtra)
+library(lubridate)
+
+## Setting data folder (working locally)
+## simple paste widows copied link into r"( )"
+data.dir <- r"(C:\Users\JFBERTRA\Documents\R\Coursera_Rprogramming\data\)"
+data.dir <- gsub("\\\\", "/", data.dir)
+```
+
+## Reading the data
+
+If security protocol does not allow for downloading the data with R, download maually to data folder.
+
+```{r reading_data, echo=TRUE}
+## If protocol allows...
+## file <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+## download.file(file,paste0(data.dir, "repdata_data_StormData.csv.bz2"))
+## In download.file(file, paste0(data.dir, "repdata_data_StormData.csv.bz2")) : cannot open URL 'https://d396qusza40orc.cloudfront.net/repdata_data_StormData.csv.bz2': HTTP status was '403 Forbidden'
+## Data was downloaded manually to data.dir 
+
+## Loading and processing the data
+data <- as.data.table(read.csv(bzfile(paste0(data.dir, "repdata_data_StormData.csv.bz2")), header = T))
+
+## looking at data
+head(data)
+str(data)
+
+## Getting variables names
+var_names <- names(data)
+```
+
+## Transform date into good format  
+
+Multiple issues were encountered with the BGN_TIME variable, including inconsistent format and some observation had "o" instead of "0".  This section adress those issues to be able to keep years from 1993 to 2011 (later in code).
+
+```{r date_processing, echo=TRUE}
+## There are multiple problems with BGN_TIME variable... including inconsistent format
+## some observations has o instead of 0
+data[, BGN_TIME := gsub("[Oo]","0",BGN_TIME)]
+
+## if the length is only 4 then will extract info and recreate BGN_TIME
+data[nchar(BGN_TIME) == 4, `:=` (hour = as.numeric(substr(BGN_TIME, start = 1, stop = 2)), min  = as.numeric(substr(BGN_TIME, start = 3, stop = 4)))]
+## if the length is only 3 then will extract info and recreate BGN_TIME
+data[nchar(BGN_TIME) == 3, `:=` (hour = as.numeric(substr(BGN_TIME, start = 1, stop = 1)), min  = as.numeric(substr(BGN_TIME, start = 2, stop = 3)))]
+## There are some observations with minutes above 60 - will convert
+data[min >= 60, `:=` (hour = hour + 1, min  = min - 60)]
+## one obs is really weird... set to 0
+data[hour > 24, `:=` (min = 0, hour = 0)]
+data[hour <= 11, daytime := "AM"][hour >= 12, daytime := "PM"][hour >= 12, hour := hour - 12]
+data[,hour := as.character(hour)][!is.na(hour) & nchar(hour) == 1, hour := paste0("0",hour)]
+data[,min := as.character(min)][!is.na(min) & nchar(min) == 1, min := paste0("0",min)]
+data[nchar(BGN_TIME) <= 4, BGN_TIME := paste0(hour,":", min,":00 ",daytime)]
+data[, beginning_time := hms(BGN_TIME)]
+data[, time_event := mdy_hms(BGN_DATE) + beginning_time]
+data[,year := year(time_event)]
+```
+
+## Reducing data size and keep only relevant variables 
+
+Once the year of the event is correctly done, there is no need to keep all the variables as it requires unecessary RAM.
+
+```{r reduce_data, echo=TRUE}
+data <- data[,.(EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP, time_event, year)]
+```
+
+## Creating list of possible events
+
+Based on the documentation provided, a list of possible events is created.  This list will be used to compare with EVTYPE and categorize properly storms and other severe weather events.
+
+```{r list_events, echo=TRUE}
+## This is the list of possible events based on the document provided
+
+list_of_possible_events = unique(c("Astronomical Low Tide", "Avalanche" , "Blizzard", "Coastal Flood", "Cold", "Wind Chill", "Debris Flow", "Dense Fog", "Dense Smoke", "Drought", "Dust Devil", "Dust Storm", "Excessive Heat",
+                            "Extreme Cold", "Wind Chill", "Flash Flood", "Flood", "Frost", "Freeze", "Funnel Cloud", "Freezing Fog", "Hail", "Heat", "Heavy Rain", 
+                            "Heavy Snow", "High Surf", "High Wind", "Hurricane", "Typhoon", "Ice Storm", "Lake-Effect Snow", "Lakeshore Flood", "Lightning", 
+                            "Marine Hail", "Marine High Wind", "Marine Strong Wind", "Marine Thunderstorm Wind", "Rip Current", "Seiche", "Sleet", "Storm Surge", "Tide",
+                            "Strong Wind", "Thunderstorm Wind", "Tornado", "Tropical Depression", "Tropical Storm", "Tsunami", "Volcanic Ash", "Waterspout", "Wildfire",
+                            "Winter Storm", "Winter Weather")) 
+list_of_possible_events
+
+## Sorted so that longest name comes first 
+sorted_list_of_possible_events <- unique(list_of_possible_events[order(vapply(list_of_possible_events, nchar, 1L), decreasing = TRUE)])
+sorted_list_of_possible_events
+```
+
+## Cleaning EVTYPE
+
+As mentioned, EVTYPE contains many more categories than what is included in the list of possible events.  For this part of the data processing we work with a copy of the data.  The first step is to convert copy_EVTYPE so that it's levels have a simlar format that the list of possible events.  As such we remove extra spaces and capitalize only the first letter of each word.  We also eliminate "s"
+at the end of words.
+
+As some words seems more problematic than others, we grab first 4 letters of each possible events and we look for similar names to find typo errors.  We remove from the list valid arguments and at first we only look at cases with more than 25 occurrences to look for major problems -- "Thunderstorm" seems to have multiple possible typos. We correct copy_EVTYPE based on those findings.  
+
+We then do the same (comparing the first 4 letters of each possible events) for case with less than 15 mismatch small easy fixes.  After this tedious process is done, with finish by reassessing all case with more than 15 case of possibles typos.
+
+Finally, we drop some lines that start with "summary" or with "?".
+
+Using the list of possible events, we create a new events list (going from bigger to smaller categories - based on string length).
+
+Some entries are difficult to re-categories, we we put them in a special category labelled "Hard to categorize". 
+
+```{r cleaning_data, echo=TRUE}
+## Convert EVTYPE to factor for easier analysis - creating copy first
+## Comparing this list to that actual recording clearly show the input of information is not the same
+## need to put words in a similar format first
+data[,copy_EVTYPE := as.factor(EVTYPE)]
+data[,copy_EVTYPE := str_to_title(copy_EVTYPE)][,copy_EVTYPE := gsub(" [Aa][Nn][Dd]|-|/|;"," & ", copy_EVTYPE)]
+data[,copy_EVTYPE := gsub("s\\b","", copy_EVTYPE)][,copy_EVTYPE := str_squish(copy_EVTYPE)]
+levels_copy_EVTYPE <- levels(droplevels(as.factor(data$copy_EVTYPE)))
+
+original_size <- nrow(data)
+
+## Some words seems more problematics than others
+
+## Grap first 4 letters of each possible events and look for similar names (looking for errors) 
+## Remove from list valid arguments not to recode them
+## Only look at case with more than 25 occurrences to look for major problems first
+
+for (i in sorted_list_of_possible_events) {
+  p <- unique(levels_copy_EVTYPE[grep(str_squish(substr(i, start = 1, stop = 4)),levels_copy_EVTYPE)])
+  q <- p[!grepl(paste0(i,"\\b"),p)] 
+  q <- q[q %in% list_of_possible_events == FALSE]
+  if (length(q) >= 25){
+    print(noquote(""))
+    print(paste0("String event look-up: ", str_squish(substr(i, start = 1, stop = 4)), " from ", i))
+    print("List of potential mistmatch: ")
+    print(q)
+    }
+}
+
+# [1] "String event look-up: Thun from Thunderstorm Wind"
+# [1] "List of potential mistmatch: "
+# [1] "Flash Flooding & Thunderstorm Wi" "Lightning & Thunderstorm Win"     "Lightning Thunderstorm Winds"     "Severe Thunderstorm"             
+# [5] "Thundeerstorm Wind"               "Thunderestorm Wind"               "Thundersnow"                      "Thundersnow Shower"              
+# [9] "Thunderstorm"                     "Thunderstorm Damage"              "Thunderstorm Damage To"           "Thunderstorm Hail"               
+# [13] "Thunderstorm W Ind"               "Thunderstorm Win"                 "Thunderstorm Winds"               "Thunderstorm Winds53"            
+# [17] "Thunderstorm Windshail"           "Thunderstormw"                    "Thunderstormw 50"                 "Thunderstormw Wind"              
+# [21] "Thunderstormwind"                 "Thunderstrom Wind"                "Thundertorm Wind"                 "Thundertsorm Wind"               
+# [25] "Thundestorm Wind"                 "Thunerstorm Wind"                
+
+recode_list <- paste0("\\b",unique(c(
+  "Thundeerstorm", "Thunderestorm", "Thundersnow", "Thunderstormw", "Thunderstormwind", "Thunderstrom", "Thundertorm", "Thundertsorm", "Thundestorm", "Thunerstorm"     
+)),"\\b")  
+recode_to <- unique(c("Thunderstorm"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+recode_list <- paste0("\\b",unique(c(
+  "Thunderstorm W Ind", "Thunderstorm Win", "Thunderstorm Winds", "Thunderstorm Winds53", "Thunderstormwind", "Thunderstorm Wi", "Severe Thunderstorm",
+  "Thunderstorm 50", "Thunderstorm Damage", "Thunderstorm Damage To"  
+  
+)),"\\b")  
+recode_to <- unique(c("Thunderstorm Wind"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+recode_list <- paste0("\\b",unique(c(
+  "Thunderstorm Hail", "Thunderstorm Windshail"
+)),"\\b")  
+recode_to <- unique(c("Thunderstorm Wind & Hail"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Wind from Wind Chill"
+# [1] "List of potential mistmatch: "
+# [1] "Blizzard & Extreme Wind Chil"       "Blizzard & High Wind"               "Blowing Snow & Extreme Wind Ch"     "Blowing Snow & Extreme Wind Chi"   
+# [5] "Blowing Snow & Extreme Wind Chil"   "Cold & Wind"                        "Downburst Wind"                     "Dry Microburst Wind"               
+# [9] "Dry Mircoburst Wind"                "Dust Storm & High Wind"             "Extreme Windchill"                  "Extreme Windchill Temperature"     
+# [13] "Flash Flood Wind"                   "Flood & Rain & Wind"                "Flood & Strong Wind"                "Gradient Wind"                     
+# [17] "Gusty Lake Wind"                    "Gusty Thunderstorm Wind"            "Gusty Wind"                         "Gusty Wind & Hail"                 
+# [21] "Gusty Wind & Hvy Rain"              "Gusty Wind & Rain"                  "Hail & Wind"                        "Heavy Rain & Urban Flood Wind &"   
+# [25] "Heavy Rain & Wind"                  "Heavy Snow & High Wind"             "Heavy Snow & High Wind & Flood"     "Heavy Snow & High Wind & Freezing" 
+# [29] "Heavy Snow & Strong Wind"           "Heavy Snow & Wind"                  "Heavy Surf & Wind"                  "High Wind &"                       
+# [33] "High Wind & Blizzard"               "High Wind & Blizzard & Freezing Ra" "High Wind & Coastal Flood"          "High Wind & Cold"                  
+# [37] "High Wind & Flooding"               "High Wind & Heavy Rain"             "High Wind & Heavy Snow"             "High Wind & High Tide"             
+# [41] "High Wind & Sea"                    "High Wind & Snow"                   "High Wind (G40)"                    "High Wind 48"                      
+# [45] "High Wind 55"                       "High Wind 57"                       "High Wind 58"                       "High Wind 63"                      
+# [49] "High Wind 66"                       "High Wind 67"                       "High Wind 70"                       "High Wind 73"                      
+# [53] "High Wind 76"                       "High Wind 80"                       "High Wind 82"                       "High Wind Damage"                  
+# [57] "High Wind Dust Storm"               "High Wind Heavy Rain"               "Hurricane Opal & High Wind"         "Ice & Strong Wind"                 
+# [61] "Lightning & Wind"                   "Lightning Thunderstorm Wind"        "Lightning Thunderstorm Winds"       "Marine Tstm Wind"                  
+# [65] "Microburst Wind"                    "Non & Severe Wind Damage"           "Non & Tstm Wind"                    "Non Tstm Wind"                     
+# [69] "Rain & Wind"                        "Record Cold & High Wind"            "Severe Thunderstorm Wind"           "Snow & High Wind"                  
+# [73] "Snow & Wind"                        "Storm Force Wind"                   "Strong Wind Gust"                   "Thuderstorm Wind"                  
+# [77] "Thundeerstorm Wind"                 "Thunderestorm Wind"                 "Thunderstorm Wind &"                "Thunderstorm Wind & Awning"        
+# [81] "Thunderstorm Wind & Flash Flood"    "Thunderstorm Wind & Flood"          "Thunderstorm Wind & Flooding"       "Thunderstorm Wind & Funnel Clou"   
+# [85] "Thunderstorm Wind & Hail"           "Thunderstorm Wind & Heavy Rain"     "Thunderstorm Wind & Lightning"      "Thunderstorm Wind & Tree"          
+# [89] "Thunderstorm Wind (G40)"            "Thunderstorm Wind 13"               "Thunderstorm Wind 2"                "Thunderstorm Wind 50"              
+# [93] "Thunderstorm Wind 52"               "Thunderstorm Wind 53"               "Thunderstorm Wind 56"               "Thunderstorm Wind 59"              
+# [97] "Thunderstorm Wind 59 Mph"           "Thunderstorm Wind 59 Mph."          "Thunderstorm Wind 60"               "Thunderstorm Wind 60 Mph"          
+# [101] "Thunderstorm Wind 61"               "Thunderstorm Wind 62"               "Thunderstorm Wind 63 Mph"           "Thunderstorm Wind 65 Mph"          
+# [105] "Thunderstorm Wind 65mph"            "Thunderstorm Wind 69"               "Thunderstorm Wind 98 Mph"           "Thunderstorm Wind Funnel Clou"     
+# [109] "Thunderstorm Wind G"                "Thunderstorm Wind G50"              "Thunderstorm Wind G51"              "Thunderstorm Wind G52"             
+# [113] "Thunderstorm Wind G55"              "Thunderstorm Wind G60"              "Thunderstorm Wind G61"              "Thunderstorm Wind Hail"            
+# [117] "Thunderstorm Wind Heavy Rain"       "Thunderstorm Wind Le Cen"           "Thunderstorm Wind Lightning"        "Thunderstorm Wind Small Strea"     
+# [121] "Thunderstorm Wind Tree"             "Thunderstorm Wind Urban Flood"      "Thunderstorm Wind."                 "Thunderstorm Winds"                
+# [125] "Thunderstorm Winds53"               "Thunderstorm Windshail"             "Thunderstormw Wind"                 "Thunderstrom Wind"                 
+# [129] "Thundertorm Wind"                   "Thundertsorm Wind"                  "Thundestorm Wind"                   "Thunerstorm Wind"                  
+# [133] "Tornadoe, Tstm Wind, Hail"          "Tstm Wind"                          "Tstm Wind & Hail"                   "Tstm Wind & Lightning"             
+# [137] "Tstm Wind (41)"                     "Tstm Wind (G35)"                    "Tstm Wind (G40)"                    "Tstm Wind (G45)"                   
+# [141] "Tstm Wind 40"                       "Tstm Wind 45"                       "Tstm Wind 50"                       "Tstm Wind 51"                      
+# [145] "Tstm Wind 52"                       "Tstm Wind 55"                       "Tstm Wind 65)"                      "Tstm Wind Damage"                  
+# [149] "Tstm Wind G45"                      "Tstm Wind G58"                      "Tunderstorm Wind"                   "Wake Low Wind"                     
+# [153] "Wind"                               "Wind & Hail"                        "Wind & Wave"                        "Wind Advisory"                     
+# [157] "Wind Damage"                        "Wind Gust"                          "Wind Storm"                         "Winter Storm & High Wind"          
+# [161] "Winter Storm High Wind"            
+
+recode_list <- paste0("\\b",unique(c(
+  "Tstm"     
+)),"\\b")  
+recode_to <- unique(c("Thunderstorm"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Heav from Heavy Rain"
+# [1] "List of potential mistmatch: "
+# [1] "Blizzard & Heavy Snow"             "Heavy Lake Snow"                   "Heavy Mix"                         "Heavy Precipatation"              
+# [5] "Heavy Precipitation"               "Heavy Rainfall"                    "Heavy Sea"                         "Heavy Shower"                     
+# [9] "Heavy Snow &"                      "Heavy Snow & Blizzard"             "Heavy Snow & Blizzard & Avalanche" "Heavy Snow & blowing Snow"        
+# [13] "Heavy Snow & Blowing Snow"         "Heavy Snow & Freezing Rain"        "Heavy Snow & High"                 "Heavy Snow & High Wind"           
+# [17] "Heavy Snow & High Wind & Flood"    "Heavy Snow & High Wind & Freezing" "Heavy Snow & Ice"                  "Heavy Snow & Ice Storm"           
+# [21] "Heavy Snow & Sleet"                "Heavy Snow & Squall"               "Heavy Snow & Strong Wind"          "Heavy Snow & Wind"                
+# [25] "Heavy Snow & Winter Storm"         "Heavy Snow Freezing Rain"          "Heavy Snow Shower"                 "Heavy Snow Squall"                
+# [29] "Heavy Snowpack"                    "Heavy Surf"                        "Heavy Surf & High Surf"            "Heavy Surf & Wind"                
+# [33] "Heavy Surf Coastal Flooding"       "Heavy Swell"                       "Heavy Wet Snow"                    "High Wind & Heavy Snow"           
+# [37] "Rain (Heavy)"                      "Rip Current & Heavy Surf"          "Rip Current Heavy Surf"            "Snow & Heavy Snow"                
+
+recode_list <- paste0("\\b",unique(c(
+  "Heavy Rainfall", "Heavy Shower", "Rain (Heavy)"     
+)),"\\b")  
+recode_to <- unique(c("Heavy Rain"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Heav from Heavy Snow"
+# [1] "List of potential mistmatch: "
+# [1] "Flash Flood & Heavy Rain"        "Flood & Heavy Rain"              "Flooding & Heavy Rain"           "Heavy Lake Snow"                
+# [5] "Heavy Mix"                       "Heavy Precipatation"             "Heavy Precipitation"             "Heavy Rain & Flood"             
+# [9] "Heavy Rain & Flooding"           "Heavy Rain & High Surf"          "Heavy Rain & Lightning"          "Heavy Rain & Mudslide & Flood"  
+# [13] "Heavy Rain & Severe Weather"     "Heavy Rain & Small Stream Urban" "Heavy Rain & Snow"               "Heavy Rain & Urban Flood"       
+# [17] "Heavy Rain & Urban Flood Wind &" "Heavy Rain & Wind"               "Heavy Rain Effect"               "Heavy Rainfall"                 
+# [21] "Heavy Sea"                       "Heavy Shower"                    "Heavy Snowpack"                  "Heavy Surf"                     
+# [25] "Heavy Surf & High Surf"          "Heavy Surf & Wind"               "Heavy Surf Coastal Flooding"     "Heavy Swell"                    
+# [29] "Heavy Wet Snow"                  "High Wind & Heavy Rain"          "High Wind Heavy Rain"            "Lightning & Heavy Rain"         
+# [33] "Locally Heavy Rain"              "Rain (Heavy)"                    "Rip Current & Heavy Surf"        "Rip Current Heavy Surf"         
+# [37] "Thunderstorm Wind & Heavy Rain"  "Thunderstorm Wind Heavy Rain"    "Tstm Heavy Rain"                
+
+recode_list <- paste0("\\b",unique(c(
+  "Heavy Snowpack", "Heavy Wet Snow"            
+)),"\\b")  
+recode_to <- unique(c("Heavy Snow"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+## Grap first 4 letters of each possible events and look for similar names (looking for errors) 
+## Remove from list valid arguments not to recode them
+## Only look at case with more less than 15 occurrences to look for small easy fix
+
+levels_copy_EVTYPE <- levels(as.factor(data$copy_EVTYPE))
+for (i in sorted_list_of_possible_events) {
+  p <- unique(levels_copy_EVTYPE[grep(str_squish(substr(i, start = 1, stop = 4)),levels_copy_EVTYPE)])
+  q <- p[!grepl(paste0(i,"\\b"),p)] 
+  q <- q[q %in% list_of_possible_events == FALSE]
+  if (length(q) != 0 &  length(q) <= 15){
+    print(noquote(""))
+    print(paste0("String event look-up: ", str_squish(substr(i, start = 1, stop = 4)), " from ", i))
+    print("List of potential mistmatch: ")
+    print(q)
+  }
+}
+
+# [1] "String event look-up: Thun from Thunderstorm Wind"
+# [1] "List of potential mistmatch: "
+# [1] "Thunderstorm"            "Thunderstorm Heavy Rain" "Thunderstorm Shower"     "Thunderstorm Wnd"       
+
+recode_list <- paste0("\\b",unique(c(
+  "Thunderstorm Wnd", "Thunderstorm Wind", "Thuderstorm Wind", "Tstmw", "Tunderstorm Wind"                  
+)),"\\b")               
+recode_to <- unique(c("Thunderstorm"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+recode_list <- paste0("\\b",unique(c(
+  "Thunderstorm"                
+)),"\\b")               
+recode_to <- unique(c("Thunderstorm Wind"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Lake from Lake-Effect Snow"
+# [1] "List of potential mistmatch: "
+# [1] "Gusty Lake Wind"    "Heavy Lake Snow"    "Lake & Effect Snow" "Lake Effect Snow"   "Lake Flood"        
+
+recode_list <- paste0("\\b",unique(c(
+  "Heavy Lake Snow", "Lake & Effect Snow", "Lake Effect Snow"                
+)),"\\b")               
+recode_to <- unique(c("Lake-Effect Snow"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Lake from Lakeshore Flood"
+# [1] "List of potential mistmatch: "
+# [1] "Gusty Lake Wind"    "Heavy Lake Snow"    "Lake & Effect Snow" "Lake Effect Snow"   "Lake Flood"    
+
+recode_list <- paste0("\\b",unique(c(
+  "Lake Flood"                
+)),"\\b")               
+recode_to <- unique(c("Lakeshore Flood"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Coas from Coastal Flood"
+# [1] "List of potential mistmatch: "
+# [1] "Coastal & Tidal Flood"       "Coastal Erosion"             "Coastal Flooding"            "Coastal Flooding & Erosion"  "Coastal Storm"              
+# [6] "Coastal Surge"               "Coastalflood"                "Coastalstorm"                "Heavy Surf Coastal Flooding"
+
+recode_list <- paste0("\\b",unique(c(
+  "Cstl"               
+)),"\\b")               
+recode_to <- unique(c("Coastal"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+recode_list <- paste0("\\b",unique(c(
+  "Coastal Flooding", "Coastalflood", "Coastal & Tidal Flood"               
+)),"\\b")               
+recode_to <- unique(c("Coastal Flood"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Extr from Extreme Cold"
+# [1] "List of potential mistmatch: "
+# [1] "Blizzard & Extreme Wind Chil"     "Blowing Snow & Extreme Wind Ch"   "Blowing Snow & Extreme Wind Chi"  "Blowing Snow & Extreme Wind Chil"
+# [5] "Extreme & Record Cold"            "Extreme Heat"                     "Extreme Wind Chill"               "Extreme Wind Chill & Blowing Sno"
+# [9] "Extreme Windchill"                "Extreme Windchill Temperature"    "Extremely Wet"                   
+
+recode_list <- paste0("\\b",unique(c(
+  "Extreme Wind Chil", "Extreme Wind Ch", "Extreme Wind Chi", "Extreme Wind Chil", "Extreme & Record Cold", "Extreme Wind Chill", "Extreme Windchill", "Extreme Windchill Temperature"
+)),"\\b")               
+recode_to <- unique(c("Extreme Cold"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Funn from Funnel Cloud"
+# [1] "List of potential mistmatch: "
+# [1] "Cold Air Funnel"                 "Funnel"                          "Thunderstorm Wind & Funnel Clou" "Thunderstorm Wind Funnel Clou"  
+
+recode_list <- paste0("\\b",unique(c(
+  "Funnel Clou" 
+)),"\\b")               
+recode_to <- unique(c("Funnel"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+recode_list <- paste0("\\b",unique(c(
+  "Funnel" 
+)),"\\b")               
+recode_to <- unique(c("Funnel Cloud"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Volc from Volcanic Ash"
+# [1] "List of potential mistmatch: "
+# [1] "Volcanic Ashfall"  "Volcanic Eruption"
+
+recode_list <- paste0("\\b",unique(c(
+  "Volcanic Ashfall", "Volcanic Eruption" 
+)),"\\b")               
+recode_to <- unique(c("Volcanic Ash"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Debr from Debris Flow"
+# [1] "List of potential mistmatch: "
+# [1] "Tornado Debri"
+
+recode_list <- paste0("\\b",unique(c(
+  "Debri" 
+)),"\\b")               
+recode_to <- unique(c("Debris Flow"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Flas from Flash Flood"
+# [1] "List of potential mistmatch: "
+# [1] "Flash Flooding"                   "Flash Flooding & Flood"           "Flash Flooding & Thunderstorm Wi" "Flash Floooding"                 
+# [5] "Flood & Flash"                    "Flood & Flash & Flood"            "Flood & Flash Flooding"           "Flood & Flashflood"              
+# [9] "Flood Flash"                      "Flood Flood & Flash"             
+
+recode_list <- paste0("\\b",unique(c(
+  "Flash Flooding", "Flood & Flash", "Flashflood", "Flash Floooding", "Flood Flash" 
+)),"\\b")               
+recode_to <- unique(c("Flash Flood"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Dust from Dust Devil"
+# [1] "List of potential mistmatch: "
+# [1] "Blowing Dust"           "Dust Devel"             "Dust Storm & High Wind" "Duststorm"              "High Wind Dust Storm"   "Saharan Dust"          
+
+recode_list <- paste0("\\b",unique(c(
+  "Dust Devel"
+)),"\\b")               
+recode_to <- unique(c("Dust Devil"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Dust from Dust Storm"
+# [1] "List of potential mistmatch: "
+# [1] "Blowing Dust"          "Dust Devel"            "Dust Devil Waterspout" "Duststorm"             "Saharan Dust"         
+
+recode_list <- paste0("\\b",unique(c(
+  "Blowing Dust", "Duststorm", "Saharan Dust"
+)),"\\b")               
+recode_to <- unique(c("Dust Storm"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Wate from Waterspout"
+# [1] "List of potential mistmatch: "
+# [1] "High Water"           "Rapidly Rising Water" "Water Spout"         
+
+recode_list <- paste0("\\b",unique(c(
+  "Water Spout"
+)),"\\b")               
+recode_to <- unique(c("Waterspout"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Aval from Avalanche"
+# [1] "List of potential mistmatch: "
+# [1] "Avalance"
+
+recode_list <- paste0("\\b",unique(c(
+  "Avalance"
+)),"\\b")               
+recode_to <- unique(c("Avalanche"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Ligh from Lightning"
+# [1] "List of potential mistmatch: "
+# [1] "Freezing Rain Sleet & Light"  "Light Freezing Rain"          "Light Snow"                   "Light Snow & Flurrie"         "Light Snow & Freezing Precip"
+# [6] "Light Snow & Sleet"           "Light Snowfall"               "Lighting"                     "Northern Light"              
+
+recode_list <- paste0("\\b",unique(c(
+  "Lighting"
+)),"\\b")               
+recode_to <- unique(c("Lightning"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Wild from Wildfire"
+# [1] "List of potential mistmatch: "
+# [1] "Wild & Forest Fire" "Wild Fire"         
+
+recode_list <- paste0("\\b",unique(c(
+  "Wild & Forest Fire", "Wild Fire"
+)),"\\b")               
+recode_to <- unique(c("Wildfire"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Torn from Tornado"
+# [1] "List of potential mistmatch: "
+# [1] "Tornadoe"                          "Tornadoe, Thunderstorm Wind, Hail" "Torndao"                          
+
+recode_list <- paste0("\\b",unique(c(
+  "Tornadoe", "Torndao"    
+)),"\\b")               
+recode_to <- unique(c("Tornado"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Hail from Hail"
+# [1] "List of potential mistmatch: "
+# [1] "Hailstorm"
+
+recode_list <- paste0("\\b",unique(c(
+  "Hailstorm"
+)),"\\b")               
+recode_to <- unique(c("Hail"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Heat from Heat"
+# [1] "List of potential mistmatch: "
+# [1] "Heatburst"
+
+recode_list <- paste0("\\b",unique(c(
+  "Heatburst"
+)),"\\b")               
+recode_to <- unique(c("Heat"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+levels_copy_EVTYPE <- levels(as.factor(data$copy_EVTYPE))
+for (i in sorted_list_of_possible_events) {
+  p <- unique(levels_copy_EVTYPE[grep(str_squish(substr(i, start = 1, stop = 4)),levels_copy_EVTYPE)])
+  q <- p[!grepl(paste0(i,"\\b"),p)] 
+  q <- q[q %in% list_of_possible_events == FALSE]
+  if (length(q) > 15){
+    print(noquote(""))
+    print(paste0("String event look-up: ", str_squish(substr(i, start = 1, stop = 4)), " from ", i))
+    print("List of potential mistmatch: ")
+    print(q)
+  }
+}
+
+# [1] "String event look-up: Free from Freezing Fog"
+# [1] "List of potential mistmatch: "
+# [1] "Agricultural Freeze"                "Blizzard & Freezing Rain"           "Damaging Freeze"                    "Early Freeze"                      
+# [5] "Freezing Drizzle"                   "Freezing Drizzle & Freezing"        "Freezing Rain"                      "Freezing Rain & Sleet"             
+# [9] "Freezing Rain & Snow"               "Freezing Rain Sleet &"              "Freezing Rain Sleet & Light"        "Freezing Spray"                    
+# [13] "Frost & Freeze"                     "Frost\\Freeze"                      "Hard Freeze"                        "Heavy Snow & Freezing Rain"        
+# [17] "Heavy Snow & High Wind & Freezing"  "Heavy Snow Freezing Rain"           "High Wind & Blizzard & Freezing Ra" "Late Freeze"                       
+# [21] "Light Freezing Rain"                "Light Snow & Freezing Precip"       "Sleet & Freezing Rain"              "Snow & Freezing Rain"              
+# [25] "Snow & Sleet & Freezing Rain"       "Snow Freezing Rain"                
+
+recode_list <- paste0("\\b",unique(c(
+  "Freezing Drizzle" 
+)),"\\b")               
+recode_to <- unique(c("Freezing Fog"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Heav from Heavy Rain"
+# [1] "List of potential mistmatch: "
+# [1] "Blizzard & Heavy Snow"             "Heavy Mix"                         "Heavy Precipatation"               "Heavy Precipitation"              
+# [5] "Heavy Sea"                         "Heavy Snow &"                      "Heavy Snow & Blizzard"             "Heavy Snow & Blizzard & Avalanche"
+# [9] "Heavy Snow & blowing Snow"         "Heavy Snow & Blowing Snow"         "Heavy Snow & Freezing Rain"        "Heavy Snow & High"                
+# [13] "Heavy Snow & High Wind"            "Heavy Snow & High Wind & Flood"    "Heavy Snow & High Wind & Freezing" "Heavy Snow & Ice"                 
+# [17] "Heavy Snow & Ice Storm"            "Heavy Snow & Sleet"                "Heavy Snow & Squall"               "Heavy Snow & Strong Wind"         
+# [21] "Heavy Snow & Wind"                 "Heavy Snow & Winter Storm"         "Heavy Snow Freezing Rain"          "Heavy Snow Shower"                
+# [25] "Heavy Snow Squall"                 "Heavy Surf"                        "Heavy Surf & High Surf"            "Heavy Surf & Wind"                
+# [29] "Heavy Surf Coastal Flood"          "Heavy Swell"                       "High Wind & Heavy Snow"            "Rain (Heavy)"                     
+# [33] "Rip Current & Heavy Surf"          "Rip Current Heavy Surf"            "Snow & Heavy Snow"                
+
+recode_list <- paste0("\\b",unique(c(
+  "Rain (Heavy)" 
+)),"\\b")               
+recode_to <- unique(c("Heavy Rain"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Ice from Ice Storm"
+# [1] "List of potential mistmatch: "
+# [1] "Black Ice"                "Falling Snow & Ice"       "Flash Flood From Ice Jam" "Glaze Ice"                "Heavy Snow & Ice"        
+# [6] "Ice"                      "Ice & Snow"               "Ice & Strong Wind"        "Ice Floe"                 "Ice Fog"                 
+# [11] "Ice Jam"                  "Ice Jam Flood (Minor"     "Ice Jam Flooding"         "Ice On Road"              "Ice Pellet"              
+# [16] "Ice Road"                 "Icestorm & Blizzard"      "Patchy Ice"               "Snow & Ice"              
+
+recode_list <- paste0("\\b",unique(c(
+  "Black Ice", "Ice Floe", "Glaze Ice", "Ice Pellet", "Icestorm", "Freezing Rain", "Freezing Spray", "Ice On Road", "Ice Road", "Patchy Ice" 
+)),"\\b")               
+recode_to <- unique(c("Ice Storm"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+recode_list <- paste0("\\b",unique(c(
+  "Ice Fog", "Freezing Drizzle"
+)),"\\b")               
+recode_to <- unique(c("Freezing Fog"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+# [1] "String event look-up: Floo from Flood"
+# [1] "List of potential mistmatch: "
+# [1] "Breakup Flooding"              "Cstl Flooding & Erosion"       "Flash Floooding"               "Flooding"                     
+# [5] "Flooding & Heavy Rain"         "Hail Flooding"                 "Heavy Rain & Flooding"         "High Wind & Flooding"         
+# [9] "Highway Flooding"              "Ice Jam Flooding"              "Minor Flooding"                "Mud Slide Urban Flooding"     
+# [13] "River Flooding"                "Small Stream & Urban Floodin"  "Small Stream Flooding"         "Snowmelt Flooding"            
+# [17] "Stream Flooding"               "Street Flooding"               "Thunderstorm Wind & Flooding"  "Tidal Flooding"               
+# [21] "Urban & Small Flooding"        "Urban & Small Stream Floodin"  "Urban & Small Stream Flooding" "Urban & Street Flooding"      
+# [25] "Urban Flooding"   
+
+recode_list <- paste0("\\b",unique(c(
+  "Flooding"
+)),"\\b")               
+recode_to <- unique(c("Flood"))
+data[,copy_EVTYPE := gsub(paste(recode_list,collapse = "|"),recode_to, copy_EVTYPE)]
+
+rm(list = c("p","q","i","recode_list","recode_to"))
+
+levels_copy_EVTYPE <- levels(as.factor(data$copy_EVTYPE))
+levels_copy_EVTYPE
+
+## Drop some lines that start with summary or ?
+data <- data[!grep("^Summary",copy_EVTYPE),][!grep("\\?",copy_EVTYPE),]
+
+## Create new events list (going from bigger to smaller)
+data[,clean_event := ""]
+for (i in sorted_list_of_possible_events) {
+  data[grepl(i,copy_EVTYPE) & clean_event == "",clean_event := i]
+}
+
+data[,clean_event := as.factor(clean_event)]
+levels(droplevels(data$clean_event))
+
+## Extract unmatched events
+wrong_event_data <-  data[clean_event == "", .(copy_EVTYPE)]
+levels(droplevels(as.factor(wrong_event_data$copy_EVTYPE)))
+
+## estimate impact of hard to categorized labelled data   
+(nrow(wrong_event_data)/original_size)
+
+## wrongfully labelled data represent lesss than 1% of sample...  
+data[clean_event == "", clean_event := "Hard to categorize"]
+
+## Some categories are synomyms... recode clean_event
+data[,clean_event := gsub("\\bExtreme Cold\\b","Wind Chill", clean_event)][,clean_event := gsub("\\bCold\\b","Wind Chill", clean_event)][,clean_event := gsub("\\bFreeze\\b","Frost", clean_event)][,clean_event := gsub("\\bTyphoon\\b","Hurricane", clean_event)][,clean_event := gsub("\\bStorm Surge\\b","Tide", clean_event)]
+data[,clean_event := as.factor(clean_event)]
+levels(data$clean_event)
+```
+
+## Keeping most recent data only 
+
+Before keeping only recent years, it is worth noticing that only `r (nrow(wrong_event_data)/original_size)` percent of all original observations are "Hard to categorize". As such we are satisfied about the cleaning process that took place (although recognizing that more could be done and would be done if this was a real work analysis). But as mentioned before as data from 1950 to 1954 only have "tornadoes" recorded while 1955 to 1992, only have "hail", "thunderstorm wind" and "tornadoes".  As such, we only look at 1993 and onward.
+
+```{r recent_data, echo=TRUE}
+## 1950 to 1954, only Tornadoes were recorded.
+## 1955 to 1992, only Hail, Thunderstorm Wind and Tornadoes were recorded 
+## 1993 onward... more categories
+data <- data[year >= 1993,]
+```
+
+## Estimating human health (fatalities and injuries) impact 
+
+As mentioned before, for the purpose of this report we use the sum of fatalities and injuries occurring during events to analyse the impact of events with respect to population health. We do not attempt to quantify the value of a fatality compared to an injury, but doing so could result in different outcome. We also do not try to control for population growth impact (e.g. 100 individuals in 1993 does not represent the same proportion of total population in 2011). Controlling for those two caveats but is above the scope of this analysis.
+
+```{r human_impact, echo=TRUE}
+data[,fatalities := FATALITIES]
+data[,injuries := INJURIES]
+data[, `:=` (total_fatalities = sum(fatalities), total_injuries = sum(injuries)), by = .(clean_event)]
+data[, total_human := (total_fatalities + total_injuries)/1000]
+```
+
+## Estimating economic (property and crop) cost
+
+We use the sum of property damage and crop damage to quantify events that have the greatest economic consequences. We do not correct any values using inflation to make any year comparable - doing so could result in different results but is above the scope of this analysis.   
+
+```{r economic_cost, echo=TRUE}
+data[,property_multiplier := ifelse(PROPDMGEXP %in% c("k", "K"),1000,ifelse(PROPDMGEXP %in% c("m", "M"),1000000,ifelse(PROPDMGEXP %in% c("b", "B"),1000000000,1)))]
+data[,crop_multiplier := ifelse(CROPDMGEXP %in% c("k", "K"),1000,ifelse(CROPDMGEXP %in% c("m", "M"),1000000,ifelse(CROPDMGEXP %in% c("b", "B"),1000000000,1)))]
+
+data[,property_damage_cost := PROPDMG * property_multiplier]
+data[,crop_damage_cost := CROPDMG * crop_multiplier]
+
+data[, `:=` (total_property_damage_cost = sum(property_damage_cost), total_crop_damage_cost = sum(crop_damage_cost)), by = .(clean_event)]
+data[, total_cost := (total_property_damage_cost + total_crop_damage_cost)/1000000000]
+```
+
+# Results
+
+In order to present only relevant results, the following figures only include storms and other severe weather events within the top 25 percentile in terms of impact.  Not doing results in figure hard to read with many irrelevant categories.
+
+```{r summary_data, echo=TRUE}
+summary_data_event  <- data[, .SD[1], by = .(clean_event)]
+## only keeping top 25 percentile - list is too long if not
+human_limit <- quantile(summary_data_event$total_human, c(.001, .01, .05, .1, .2, .3, .5, .75, .99)) 
+cost_limit <- quantile(summary_data_event$total_cost, c(.001, .01, .05, .1, .2, .3, .5, .75, .99)) 
+```
+
+## Types of events are most harmful with respect to population health
+
+Focusing on recent years (1993 to 2011), the top 4 events the are most harmful with respect to population health in the United States are 1) tornadoes, 2) excessive heat, 3) flood and 4) thunderstorm wind.
+
+```{r figure_1, echo=TRUE}
+summary_data_event_human  <- summary_data_event[total_human > human_limit[8]]
+summary_data_event_human <- summary_data_event_human[,.(clean_event, total_human, total_fatalities, total_injuries, total_cost, total_property_damage_cost, total_crop_damage_cost)]
+summary_data_event_human <- summary_data_event_human[order(clean_event),] 
+
+summary_data_event_human$clean_event = with(summary_data_event_human, reorder(clean_event,total_human))
+
+## Make a barplot of the total human fatalities/injuries by events
+g1 <- ggplot(summary_data_event_human, aes(x=clean_event, y=total_human)) + geom_bar(stat="identity") + coord_flip()
+g1 <- g1 + labs(title = "Figure 1: Total human fatalities/injuries (000s), 1993 to 2011", subtitle = "(Limited to events with impact above 75th percentile))", y = "Human fatalities/injuries (000s)", x= "Severe weather event") + theme_bw()
+g1 <- g1 + theme(plot.title = element_text(size = 10, face = "bold"), plot.subtitle = element_text(size = 8))
+g1 
+```
+
+Focusing on recent years (1993 to 2011), the top 4 events that have the greatest economic consequences in the United States are 1) flood, 2) hurricane, 3) tide and 4) tornadoes. 
+
+```{r figure_2, echo=TRUE}
+summary_data_event_cost  <- summary_data_event[total_cost > cost_limit[8]]
+summary_data_event_cost <- summary_data_event_cost[,.(clean_event, total_human, total_fatalities, total_injuries, total_cost, total_property_damage_cost, total_crop_damage_cost)]
+summary_data_event_cost <- summary_data_event_cost[order(clean_event),] 
+
+summary_data_event_cost$clean_event = with(summary_data_event_cost, reorder(clean_event,total_cost))
+
+## Make a barplot of the total property/crop cost by events
+g2 <- ggplot(summary_data_event_cost, aes(x=clean_event, y=total_cost)) + geom_bar(stat="identity") + coord_flip()
+g2 <- g2 + labs(title = "Figure 2: Estimated property/crop damage cost (B$), 1993 to 2011", subtitle = "(Limited to events with impact above 75th percentile)", y = "Cost (in B$)", x= "Severe weather event") + theme_bw()
+g2 <- g2 + theme(plot.title = element_text(size = 10, face = "bold"), plot.subtitle = element_text(size = 8))
+g2 
+```
+
+While addressing the issues contributing to climate change would help reducing the human and economic impact of those severe events, finding solutions to address the impact of flood (both in the top 4 from a human and economic perspective) might is a good place to start acting now.  First step could be to identify zones more susceptible to flooding in municipalities and establish a plan to re localize at risk properties or planning response to appropriately reduce the human and economic impact of floods.
+
