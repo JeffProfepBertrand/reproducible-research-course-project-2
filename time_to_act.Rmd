@@ -44,7 +44,7 @@ library(lubridate)
 
 ## Setting data folder (working locally)
 ## simple paste widows copied link into r"( )"
-data.dir <- r"(C:\Users\JFBERTRA\Documents\R\Coursera_Rprogramming\data\)"
+data.dir <- r"(F:\Jeff et Sara\Documents\R\reproducible-research-course-project-2\data\)"
 data.dir <- gsub("\\\\", "/", data.dir)
 ```
 
@@ -54,8 +54,8 @@ If security protocol does not allow for downloading the data with R, download ma
 
 ```{r reading_data, echo=TRUE}
 ## If protocol allows...
-## file <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
-## download.file(file,paste0(data.dir, "repdata_data_StormData.csv.bz2"))
+file <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+download.file(file,paste0(data.dir, "repdata_data_StormData.csv.bz2"))
 ## In download.file(file, paste0(data.dir, "repdata_data_StormData.csv.bz2")) : cannot open URL 'https://d396qusza40orc.cloudfront.net/repdata_data_StormData.csv.bz2': HTTP status was '403 Forbidden'
 ## Data was downloaded manually to data.dir 
 
